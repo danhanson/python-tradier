@@ -255,6 +255,7 @@ class Session(object):
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['day']))
+        frame['date'] = frame['date'].apply(_from_iso_date)
         frame.set_index(['date'], inplace=True)
         return frame
 
@@ -467,7 +468,7 @@ class AsyncClient(object):
 class SyncClient(object):
 
     def __init__(self, token: Union[str, bytes]):
-        self._tradier = Tradier(token)
+        self._tradier = AsyncClient(token)
 
     def quotes(self, symbols: Iterable[str]) -> Optional[pd.DataFrame]:
         return _synchronously(self._tradier.quotes(symbols))

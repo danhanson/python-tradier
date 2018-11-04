@@ -54,24 +54,6 @@ option_exchanges = MappingProxyType({
 })
 
 
-def _from_timestamp(t: Union[int, float]) -> dt.datetime:
-    if pd.isna(t):
-        return t
-    return dt.datetime.fromtimestamp(t, dt.timezone.utc)
-
-
-def _from_milli_timestamp(t: Union[int, float]) -> dt.datetime:
-    if pd.isna(t):
-        return t
-    return dt.datetime.fromtimestamp(t / 1000, dt.timezone.utc)
-
-
-def _from_iso_date(d: Union[str, float]) -> dt.date:
-    if pd.isna(d):
-        return d
-    return dt.date(*map(int, d.split('-')))
-
-
 def _from_iso_time(t: Union[str, float]) -> dt.time:
     if pd.isna(t):
         return t
@@ -156,16 +138,16 @@ class Session(object):
         response = (await self._request(
             'GET',
             '/v1/markets/quotes?symbols={}'.format(symbol_str)
-        ))['quotes']
+        )).get('quotes', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['quote']))
         frame.set_index(['symbol'], inplace=True)
         for key in ('trade_date', 'bid_date', 'ask_date'):
             if key in frame:
-                frame[key] = frame[key].apply(_from_milli_timestamp)
+                frame[key] = pd.to_datetime(frame[key] * 1e6)
         if 'expiration_date' in frame:
-            frame['expiration_date'] = frame['expiration_date'].apply(_from_iso_date)
+            frame['expiration_date'] = pd.to_datetime(frame['expiration_date'])
         return frame
 
     async def timesales(
@@ -189,11 +171,11 @@ class Session(object):
             'GET',
             '/v1/markets/timesales',
             params
-        ))['series']
+        )).get('series', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['data']))
-        frame['time'] = frame['timestamp'].apply(_from_timestamp)
+        frame['time'] = pd.to_datetime(frame['timestamp'] * 1e9)
         frame.drop('timestamp', 1, inplace=True)
         frame.set_index(['time'], inplace=True)
         return frame
@@ -208,7 +190,7 @@ class Session(object):
             ('symbol', symbol),
             ('expiration', _convert_datetime(expiration))
         )
-        response = (await self._request('GET', path, params))['options']
+        response = (await self._request('GET', path, params)).get('options', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['option']))
@@ -224,17 +206,17 @@ class Session(object):
             ('symbol', symbol),
             ('expiration', _convert_datetime(expiration))
         )
-        response = (await self._request('GET', path, params))['strikes']
+        response = (await self._request('GET', path, params)).get('strikes', None)
         if response is None:
             return None
         return pd.Series(response['strike'], name='strikes')
 
-    async def option_expirations(self) -> Optional[pd.Series]:
-        path = '/v1/markets/options/expirations'
-        response = (await self._request('GET', path))['expirations']
+    async def option_expirations(self, symbol: str) -> Optional[pd.Series]:
+        path = '/v1/markets/options/expirations?symbol={}'.format(symbol)
+        response = (await self._request('GET', path)).get('expirations', None)
         if response is None:
             return None
-        return pd.Series(map(_from_iso_date, response['date']), name='date')
+        return pd.Series(pd.to_datetime(response['date']), name='date')
 
     async def historical_pricing(
         self,
@@ -251,19 +233,19 @@ class Session(object):
                 ('end', end and _convert_datetime(end))
             ) if v is not None
         ]
-        response = (await self._request('GET', '/v1/markets/history', params))['history']
+        response = (await self._request('GET', '/v1/markets/history', params)).get('history', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['day']))
-        frame['date'] = frame['date'].apply(_from_iso_date)
+        frame['date'] = pd.to_datetime(frame['date'])
         frame.set_index(['date'], inplace=True)
         return frame
 
     async def clock(self) -> Optional[Clock]:
-        response = (await self._request('GET', '/v1/markets/clock'))['clock']
+        response = (await self._request('GET', '/v1/markets/clock')).get('clock', None)
         if response is None:
             return None
-        date = _from_timestamp(response['timestamp'])
+        date = pd.to_datetime(response['timestamp'] * 1e9)
         next_time = dt.time(*map(int, response['next_change'].split(':')))
         next_date = date.replace(
             hour=next_time.hour,
@@ -315,11 +297,11 @@ class Session(object):
             )
             if v is not None
         ]
-        response = (await self._request('GET', '/v1/markets/calendar', params))['calendar']
+        response = (await self._request('GET', '/v1/markets/calendar', params)).get('calendar', None)
         if response is None:
             return None
         days = pd.DataFrame(_ensure_list(response['days']['day']))
-        days['date'] = days['date'].apply(_from_iso_date)
+        days['date'] = pd.to_datetime(days['date'])
 
         def to_time_range(value):
             if pd.isna(value):
@@ -349,7 +331,7 @@ class Session(object):
         params = [('q', query)]
         if indexes:
             params += ('indexes', 'true')
-        response = (await self._request('GET', '/v1/markets/search', params))['securities']
+        response = (await self._request('GET', '/v1/markets/search', params)).get('securities', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['security']))
@@ -371,7 +353,7 @@ class Session(object):
         ]
         if not kvs:
             raise ValueError('An argument must be provided')
-        response = (await self._request('GET', '/v1/markets/lookup', params))['securities']
+        response = (await self._request('GET', '/v1/markets/lookup', params)).get('securities', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['security']))
@@ -417,7 +399,7 @@ class AsyncClient(object):
         async with self.session() as session:
             return await session.option_strikes(symbol, expiration)
 
-    async def option_expirations(self) -> Optional[pd.Series]:
+    async def option_expirations(self, symbol: str) -> Optional[pd.Series]:
         async with self.session() as session:
             return await session.option_expirations(symbol)
 
@@ -503,8 +485,8 @@ class SyncClient(object):
             self._tradier.option_strikes(symbol, expiration)
         )
 
-    def option_expirations(self) -> Optional[pd.Series]:
-        return _synchronously(self._tradier.option_expirations())
+    def option_expirations(self, symbol: str) -> Optional[pd.Series]:
+        return _synchronously(self._tradier.option_expirations(symbol))
 
     def historical_pricing(
         self,

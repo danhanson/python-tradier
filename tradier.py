@@ -97,6 +97,10 @@ class Calendar(NamedTuple):
     month: int
 
 
+class HttpError(Exception):
+    pass
+
+
 class Session(object):
 
     def __init__(self, session: aiohttp.ClientSession):
@@ -126,18 +130,22 @@ class Session(object):
     ) -> Optional[dict]:
         response = await self._session.request(
             method,
-            'https://sandbox.tradier.com{}'.format(path),
+            f'https://sandbox.tradier.com{path}',
             params=params
         )
         if not (200 <= response.status < 300):
-            raise ValueError('Received status code: {}'.format(response.status))
+            raise HttpError({
+                'status': response.status,
+                'reason': response.reason,
+                'message': await response.text()
+            })
         return await response.json(encoding='utf-8')
 
     async def quotes(self, symbols: Iterable[str]) -> Optional[pd.DataFrame]:
         symbol_str = ','.join(symbols)
         response = (await self._request(
             'GET',
-            '/v1/markets/quotes?symbols={}'.format(symbol_str)
+            f'/v1/markets/quotes?symbols={symbol_str}'
         )).get('quotes', None)
         if response is None:
             return None
@@ -351,7 +359,7 @@ class Session(object):
                 ('types', types and ','.join(types))
             ) if v is not None
         ]
-        if not kvs:
+        if not params:
             raise ValueError('An argument must be provided')
         response = (await self._request('GET', '/v1/markets/lookup', params)).get('securities', None)
         if response is None:
@@ -370,7 +378,7 @@ class AsyncClient(object):
         return Session(
             aiohttp.ClientSession(
                 headers=[
-                    ('Authorization', 'Bearer {}'.format(self._token)),
+                    ('Authorization', f'Bearer {self._token}'),
                     ('Accept', 'application/json')
                 ]
             )

@@ -62,7 +62,7 @@ def _convert_datetime(datetime: Union[dt.date, dt.datetime, str]) -> str:
     return datetime.isoformat()
 
 
-def _ensure_list(item: T) -> List[T]:
+def _ensure_list(item: T) -> List:
     if isinstance(item, Sequence):
         return item
     else:

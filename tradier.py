@@ -1,13 +1,9 @@
 import asyncio as aio
-import json
 import aiohttp
 import pandas as pd
 import datetime as dt
-import urllib.parse
-import re
-from typing import Optional, Union, NamedTuple, Iterable, Sequence, Mapping, TypeVar, List, Awaitable
+from typing import Optional, Union, NamedTuple, Iterable, Sequence, Mapping, TypeVar, List, Awaitable, Tuple
 from types import TracebackType, MappingProxyType
-import math
 
 T = TypeVar('T')
 
@@ -103,8 +99,9 @@ class HttpError(Exception):
 
 class Session(object):
 
-    def __init__(self, session: aiohttp.ClientSession):
+    def __init__(self, endpoint: str, session: aiohttp.ClientSession):
         self._session = session
+        self._endpoint = endpoint
 
     async def __aenter__(self) -> 'Session':
         return self
@@ -126,11 +123,11 @@ class Session(object):
         self,
         method: str,
         path: str,
-        params: Optional[Union[Iterable[Sequence[str]], Mapping[str, str]]]=None
+        params: Optional[Iterable[Tuple[str]]]=None
     ) -> Optional[dict]:
         response = await self._session.request(
             method,
-            f'https://sandbox.tradier.com{path}',
+            f'{self._endpoint}{path}',
             params=params
         )
         if not (200 <= response.status < 300):
@@ -145,7 +142,7 @@ class Session(object):
         symbol_str = ','.join(symbols)
         response = (await self._request(
             'GET',
-            f'/v1/markets/quotes?symbols={symbol_str}'
+            f'markets/quotes?symbols={symbol_str}'
         )).get('quotes', None)
         if response is None:
             return None
@@ -177,7 +174,7 @@ class Session(object):
         ]
         response = (await self._request(
             'GET',
-            '/v1/markets/timesales',
+            'markets/timesales',
             params
         )).get('series', None)
         if response is None:
@@ -193,7 +190,7 @@ class Session(object):
         symbol: str,
         expiration: Union[dt.date, str]
     ) -> Optional[pd.DataFrame]:
-        path = '/v1/markets/options/chains'
+        path = 'markets/options/chains'
         params = (
             ('symbol', symbol),
             ('expiration', _convert_datetime(expiration))
@@ -209,7 +206,7 @@ class Session(object):
         self, symbol: str,
         expiration: Union[dt.date, str]
     ) -> pd.Series:
-        path = '/v1/markets/options/strikes'
+        path = 'markets/options/strikes'
         params = (
             ('symbol', symbol),
             ('expiration', _convert_datetime(expiration))
@@ -220,7 +217,7 @@ class Session(object):
         return pd.Series(response['strike'], name='strikes')
 
     async def option_expirations(self, symbol: str) -> Optional[pd.Series]:
-        path = '/v1/markets/options/expirations?symbol={}'.format(symbol)
+        path = 'markets/options/expirations?symbol={}'.format(symbol)
         response = (await self._request('GET', path)).get('expirations', None)
         if response is None:
             return None
@@ -241,7 +238,7 @@ class Session(object):
                 ('end', end and _convert_datetime(end))
             ) if v is not None
         ]
-        response = (await self._request('GET', '/v1/markets/history', params)).get('history', None)
+        response = (await self._request('GET', 'markets/history', params)).get('history', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['day']))
@@ -250,7 +247,7 @@ class Session(object):
         return frame
 
     async def clock(self) -> Optional[Clock]:
-        response = (await self._request('GET', '/v1/markets/clock')).get('clock', None)
+        response = (await self._request('GET', 'markets/clock')).get('clock', None)
         if response is None:
             return None
         date = pd.to_datetime(response['timestamp'] * 1e9)
@@ -305,7 +302,7 @@ class Session(object):
             )
             if v is not None
         ]
-        response = (await self._request('GET', '/v1/markets/calendar', params)).get('calendar', None)
+        response = (await self._request('GET', 'markets/calendar', params)).get('calendar', None)
         if response is None:
             return None
         days = pd.DataFrame(_ensure_list(response['days']['day']))
@@ -339,7 +336,7 @@ class Session(object):
         params = [('q', query)]
         if indexes:
             params += ('indexes', 'true')
-        response = (await self._request('GET', '/v1/markets/search', params)).get('securities', None)
+        response = (await self._request('GET', 'markets/search', params)).get('securities', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['security']))
@@ -361,7 +358,7 @@ class Session(object):
         ]
         if not params:
             raise ValueError('An argument must be provided')
-        response = (await self._request('GET', '/v1/markets/lookup', params)).get('securities', None)
+        response = (await self._request('GET', 'markets/lookup', params)).get('securities', None)
         if response is None:
             return None
         frame = pd.DataFrame(_ensure_list(response['security']))
@@ -371,11 +368,19 @@ class Session(object):
 
 class AsyncClient(object):
 
-    def __init__(self, token: str):
+    def __init__(self, token: str, endpoint: str):
         self._token = token
+        if endpoint == 'sandbox':
+            self._endpoint = 'https://sandbox.tradier.com/v1/'
+        elif endpoint == 'brokerage':
+            self._endpoint = 'https://api.tradier.com/v1/'
+        else:
+            raise ValueError('Endpoint must be either \'sandbox\' or \'brokerage\'')
+
 
     def session(self) -> Session:
         return Session(
+            self._endpoint,
             aiohttp.ClientSession(
                 headers=[
                     ('Authorization', f'Bearer {self._token}'),
@@ -457,8 +462,8 @@ class AsyncClient(object):
 
 class SyncClient(object):
 
-    def __init__(self, token: Union[str, bytes]):
-        self._tradier = AsyncClient(token)
+    def __init__(self, token: str, endpoint: str):
+        self._tradier = AsyncClient(token, endpoint)
 
     def quotes(self, symbols: Iterable[str]) -> Optional[pd.DataFrame]:
         return _synchronously(self._tradier.quotes(symbols))
